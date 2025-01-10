@@ -1,0 +1,22 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <StartupObject>Photos.Desktop.Program</StartupObject>
+    <AssemblyName>uPhotos</AssemblyName>
+    <ApplicationIcon>..\Photos.Desktop.Lib\Properties\image.ico</ApplicationIcon>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)'=='Release'">
+    <DebugSymbols>False</DebugSymbols>
+    <DebugType>None</DebugType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Photos.Desktop.Lib\Photos.Desktop.Lib.csproj" />
+  </ItemGroup>
+
+</Project>

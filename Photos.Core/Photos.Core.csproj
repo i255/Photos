@@ -1,0 +1,27 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+  </PropertyGroup>
+  
+  <PropertyGroup Condition="'$(Configuration)'=='Release'">
+    <DebugSymbols>False</DebugSymbols>
+    <DebugType>None</DebugType>
+  </PropertyGroup>
+  
+  <ItemGroup>
+    <EmbeddedResource Include="..\_misc\cities.csv" Link="cities.csv" />
+  </ItemGroup>
+  
+  <ItemGroup>
+    <PackageReference Include="MessagePack" Version="3.1.0" />
+    <PackageReference Include="SkiaSharp" Version="3.116.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Photos.Lib\Photos.Lib.csproj" />
+  </ItemGroup>
+
+</Project>

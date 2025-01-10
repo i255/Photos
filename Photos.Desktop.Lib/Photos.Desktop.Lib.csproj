@@ -1,0 +1,34 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+	<AllowUnsafeBlocks>True</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Remove="Properties\image_16.png" />
+    <None Remove="Properties\image_32.png" />
+    <None Remove="Properties\image_96.png" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Properties\image_16.png" />
+    <EmbeddedResource Include="Properties\image_32.png" />
+    <EmbeddedResource Include="Properties\image_96.png" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Magick.NET-Q8-AnyCPU" Version="14.2.0" />
+    <PackageReference Include="OpenTK" Version="4.9.3" />
+    <PackageReference Include="SkiaSharp" Version="3.116.1" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux" Version="2.88.3" Condition="'$(RuntimeIdentifier)' == 'linux-x64'" />
+  </ItemGroup>
+  
+  <ItemGroup>
+    <ProjectReference Include="..\Photos.Core\Photos.Core.csproj" />
+    <ProjectReference Include="..\Photos.Lib\Photos.Lib.csproj" />
+  </ItemGroup>
+
+</Project>
