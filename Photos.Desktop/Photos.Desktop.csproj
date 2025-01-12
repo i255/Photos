@@ -18,5 +18,9 @@
   <ItemGroup>
     <ProjectReference Include="..\Photos.Desktop.Lib\Photos.Desktop.Lib.csproj" />
   </ItemGroup>
+  
+  <ItemGroup>
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux" Version="3.116.1" Condition="'$(RuntimeIdentifier)' == 'linux-x64'" />
+  </ItemGroup>
 
 </Project>
