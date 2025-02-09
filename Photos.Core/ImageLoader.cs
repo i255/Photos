@@ -26,8 +26,10 @@ namespace Photos.Core
                 if (sKCodec != null)
                 {
                     origin = sKCodec.EncodedOrigin;
-                    imgData.OriginalInfo = sKCodec.Info;
-                    var scale = scaler(imgData.OriginalInfo, false);
+                    imgData.Width = sKCodec.Info.Width;
+                    imgData.Height = sKCodec.Info.Height;
+
+                    var scale = scaler(sKCodec.Info, false);
                     var preScale = sKCodec.GetScaledDimensions((1f / scale) + (1f / 16)); // they add 1/16 in onGetScaledDimensions see https://github.com/google/skia/blob/main/src/codec/SkJpegCodec.cpp
                     // GetScaledDimensions does not work in 2.88.6
                     // https://github.com/mono/SkiaSharp/issues/2645
@@ -38,7 +40,7 @@ namespace Photos.Core
                     //        preScale = info.Size;
                     //        Trace($"bad scale: {preScale} {info.Size}");
                     //    }
-                    imgData.Bitmap = new SKBitmap(preScale.Width, preScale.Height, imgData.OriginalInfo.ColorType, imgData.OriginalInfo.AlphaType);
+                    imgData.Bitmap = new SKBitmap(preScale.Width, preScale.Height, sKCodec.Info.ColorType, sKCodec.Info.AlphaType);
                     var codecRes = sKCodec.GetPixels(imgData.Bitmap.Info, imgData.Bitmap.GetPixels(out var length));
                     if (codecRes != SKCodecResult.Success && codecRes != SKCodecResult.IncompleteInput)
                     {
@@ -79,7 +81,9 @@ namespace Photos.Core
                         }
                     }
 
-                    FixOrientation(ref imgData.Bitmap, origin);
+                    if (FixOrientation(ref imgData.Bitmap, origin))
+                        (imgData.Width, imgData.Height) = (imgData.Height, imgData.Width);
+
                     FixOrientation(ref imgData.Bitmap, imgData.Orientation);
                 }
             }
@@ -94,10 +98,10 @@ namespace Photos.Core
 
        
 
-        public static void FixOrientation(ref SKBitmap bmp, SKEncodedOrigin origin)
+        public static bool FixOrientation(ref SKBitmap bmp, SKEncodedOrigin origin)
         {
             if (origin == SKEncodedOrigin.TopLeft)
-                return;
+                return false;
 
             var m = origin switch
             {
@@ -113,6 +117,7 @@ namespace Photos.Core
             };
 
             SKBitmap rotated;
+            var isRotated = false;
             switch (origin)
             {
                 case SKEncodedOrigin.TopRight:
@@ -125,6 +130,7 @@ namespace Photos.Core
                 case SKEncodedOrigin.RightBottom:
                 case SKEncodedOrigin.LeftBottom:
                     rotated = new SKBitmap(bmp.Height, bmp.Width);
+                    isRotated = true;
                     break;
                 default:
                     throw new NotImplementedException();
@@ -138,6 +144,8 @@ namespace Photos.Core
 
             bmp.Dispose();
             bmp = rotated;
+
+            return isRotated;
         }
 
         public static SKImage DecodeThumbnail(SKData data, SKEncodedOrigin orientation)

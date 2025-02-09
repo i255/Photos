@@ -718,7 +718,7 @@ namespace Photos.Core
             if (idx == photoProvider.Idx)
                 _lastRenderInfo = bitmap.Info;
 
-            var maxBounds = new SKSize(file.W, file.H);
+            var maxBounds = photoProvider.GetImageDimsAfterOrientation(file);
             if (maxBounds == default) // not yet indexed
                 maxBounds = bitmap.Info.Rect.Size;
 

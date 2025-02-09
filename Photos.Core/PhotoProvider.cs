@@ -694,14 +694,14 @@ namespace Photos.Core
                     buf = microBuf = null;
                 else
                 {
-                    file.W = skData.OriginalInfo.Width;
-                    file.H = skData.OriginalInfo.Height;
+                    file.W = skData.Width;
+                    file.H = skData.Height;
 
                     using var data = skData.Bitmap.Encode(SKEncodedImageFormat.Jpeg, 85);
                     buf = data.ToArray();
 
                     using var tmpImg = SKImage.FromBitmap(skData.Bitmap);
-                    using var micro = ScaleImage(tmpImg, MicroThumbnailSize, file);
+                    using var micro = ScaleImage(tmpImg, MicroThumbnailSize, new SKSizeI(file.W, file.H));
                     using var data2 = micro.Encode(SKEncodedImageFormat.Jpeg, 85);
                     microBuf = data2.ToArray();
                 }
@@ -757,7 +757,7 @@ namespace Photos.Core
             if (res == null && !fast && initTask.IsCompleted)
             {
                 var largeImage = GetFullThumbnail(rec);
-                using var bmp = ScaleImage(largeImage, DB.Settings.ThumbnailDrawSize, rec);
+                using var bmp = ScaleImage(largeImage, DB.Settings.ThumbnailDrawSize, GetImageDimsAfterOrientation(rec));
                 res = SKImage.FromBitmap(bmp);
                 _scaledThumbnails.Put(rec.Sig, res);
             }
@@ -766,13 +766,31 @@ namespace Photos.Core
         }
 
         public bool IsFullScreenDrawMode => DB.Settings.ThumbnailDrawSize < 0;
-
-        private static SKBitmap ScaleImage(SKImage largeImage, int size, FileRecord orig)
+        public SKSizeI GetImageDimsAfterOrientation(FileRecord rec)
         {
-            if (orig.H == 0 || orig.W == 0)
+            var o = GetOrientation(rec);
+            SKSizeI res = new(rec.W, rec.H);
+            switch (o)
+            {
+                case SKEncodedOrigin.LeftTop:
+                case SKEncodedOrigin.RightTop:
+                case SKEncodedOrigin.RightBottom:
+                case SKEncodedOrigin.LeftBottom:
+                    res = new SKSizeI(rec.H, rec.W);
+                    break;
+                default:
+                    break;
+            }
+
+            return res;
+        }
+
+        private static SKBitmap ScaleImage(SKImage largeImage, int size, SKSizeI origSize)
+        {
+            if (origSize.Height == 0 || origSize.Width == 0)
                 throw new Exception("bas size");
 
-            var bmp = new SKBitmap(Math.Min(size, orig.W), Math.Min(size, orig.H), largeImage.ColorType, largeImage.AlphaType);
+            var bmp = new SKBitmap(Math.Min(size, origSize.Width), Math.Min(size, origSize.Height), largeImage.ColorType, largeImage.AlphaType);
             using (var canvas = new SKCanvas(bmp))
             {
                 var dstRect = bmp.Info.Rect;
@@ -1038,8 +1056,8 @@ namespace Photos.Core
         public SKData Data;
 
         public SKBitmap Bitmap;
-        public SKImageInfo OriginalInfo;
         public SKEncodedOrigin Orientation;
+        public int Width, Height;
 
         public void Dispose()
         {

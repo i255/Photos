@@ -124,7 +124,8 @@ namespace Photos.Core
                     }
 
                     // draw micro
-                    var rect = SKRect.Create(Math.Min(ThumbnailDrawSize, lastShownFile.W), Math.Min(ThumbnailDrawSize, lastShownFile.H));
+                    var size = photoProvider.GetImageDimsAfterOrientation(lastShownFile);
+                    var rect = SKRect.Create(Math.Min(ThumbnailDrawSize, size.Width), Math.Min(ThumbnailDrawSize, size.Height));
                     rect.Offset(-(rect.Width - ThumbnailDrawSize) / 2, -(rect.Height - ThumbnailDrawSize) / 2);
 
                     return (photoProvider.GetMicroThumbnail(lastShownFile), rect);
@@ -223,10 +224,9 @@ namespace Photos.Core
                         var groupStart = bottomOffset;
                         for (var i = 0; i < item.Count; i++)
                         {
-                            var f = photoProvider.GetFile(i + item.StartIdx);
-
-                            var imgW = Math.Min(f.W, width);
-                            var imgH = imgW / f.W * f.H;
+                            var size = photoProvider.GetImageDimsAfterOrientation(photoProvider.GetFile(i + item.StartIdx));
+                            var imgW = Math.Min(size.Width, width);
+                            var imgH = imgW / size.Width * size.Height;
                             imgPositions.Add((SKRect.Create((width - imgW) / 2, bottomOffset, imgW, imgH), groupStart));
                             bottomOffset += (imgH + ThumbnailMargin);
                         }

@@ -20,12 +20,13 @@ namespace Photos.Desktop
             using var image = new MagickImage();
             MagickReadSettings settings = null;
             if (Path.GetExtension(data.FullPath)?.ToLowerInvariant() == ".svg")
-                settings = new MagickReadSettings { Format =  MagickFormat.Msvg };
+                settings = new MagickReadSettings { Format = MagickFormat.Msvg };
             if (data.Directory.SourceId == 0)
                 image.Read(data.FullPath, settings);
             else
                 image.Read(data.Data.Span);
-            data.OriginalInfo = new((int)image.Width, (int)image.Height);
+            data.Width = (int)image.Width;
+            data.Height = (int)image.Height;
             //var scale = scaler(info, true);
             //if (scale != 1f)
             //    image.Resize((int)Math.Round(info.Width / scale), (int)Math.Round(info.Height / scale));
