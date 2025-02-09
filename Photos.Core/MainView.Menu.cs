@@ -162,7 +162,7 @@ namespace Photos.Core
             (PhotoProvider.LargeThumbnailSize, "Large"), (768, "Huge"), (1080, "Full HD")];
         private void ShowThumbnailDisplaySizeMenu(MenuDef menu)
         {
-            menu.Items.AddRange(ThumbnailSizes.Select(x => new MenuItem()
+            menu.Items.AddRange(ThumbnailSizes.Concat([(-1, "Max")]).Select(x => new MenuItem()
                {
                    Text = $"{x.Item2} ({x.Item1}px)",
                    OnClick = () => { photoProvider.DB.Settings = photoProvider.DB.Settings with { ThumbnailDrawSize = x.Item1 }; /*mainMenu.Close();*/ },

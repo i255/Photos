@@ -751,7 +751,7 @@ namespace Photos.Core
                 _checkPrio = true;
             }
 
-            if (!rec.IsIndexed() || rec.IndexFailed) // will be fast
+            if (!rec.IsIndexed() || rec.IndexFailed || IsFullScreenDrawMode) // will be fast
                 return GetFullThumbnail(rec);
 
             if (res == null && !fast && initTask.IsCompleted)
@@ -765,6 +765,8 @@ namespace Photos.Core
             return res;
         }
 
+        public bool IsFullScreenDrawMode => DB.Settings.ThumbnailDrawSize < 0;
+
         private static SKBitmap ScaleImage(SKImage largeImage, int size, FileRecord orig)
         {
             if (orig.H == 0 || orig.W == 0)
@@ -775,7 +777,8 @@ namespace Photos.Core
             {
                 var dstRect = bmp.Info.Rect;
                 var imgMinSize = Math.Min(largeImage.Width, largeImage.Height);
-                var srcSize = new SKSize(Math.Max(imgMinSize, dstRect.Width), Math.Max(imgMinSize, dstRect.Height));
+                var srcSize = size > imgMinSize ? new SKSize(imgMinSize, imgMinSize)
+                    : new SKSize(Math.Max(imgMinSize, dstRect.Width), Math.Max(imgMinSize, dstRect.Height));
                 var srcRect = SKRect.Create((largeImage.Width - srcSize.Width) / 2, (largeImage.Height - srcSize.Height) / 2, srcSize.Width, srcSize.Height);
                 using var paint = new SKPaint() { IsAntialias = true };
                 canvas.DrawImage(largeImage, srcRect, dstRect, BaseView.HighQualitySampling, paint);

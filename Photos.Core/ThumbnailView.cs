@@ -19,7 +19,7 @@ namespace Photos.Core
         public float HeaderHeight = 80;
 
         public const int ThumbnailMargin = 5;
-        int LineHeight => ThumbnailDrawSize + ThumbnailMargin;
+        int LineHeight => photoProvider.IsFullScreenDrawMode ? throw new Exception() : ThumbnailDrawSize + ThumbnailMargin;
 
         string _dateTimeFormat;
 
@@ -28,7 +28,7 @@ namespace Photos.Core
         public readonly ScrollContainer ScrollContainer;
 
         FileRecord lastShownFile;
-        Replicator imgReplicator;
+        Replicator imgReplicator, groupReplicator;
 
         public readonly HashSet<int> SelectedItems = new();
         public bool SelectionActive => SelectedItems.Count > 0;
@@ -39,7 +39,8 @@ namespace Photos.Core
             {
                 Link = Attach(() => OuterRect),
                 ScrollerWidth = { Func = () => buttonSize },
-                ScrollStep = { Func = () => photoProvider.DB.Settings.ThumbnailDrawSize / 2 },
+                ScrollStep = { Func = () => photoProvider.IsFullScreenDrawMode ? Size.Height / 10 : 
+                    Math.Min(photoProvider.DB.Settings.ThumbnailDrawSize / 2, Size.Height / 10) },
                 ScrollPositionHintSize = { Func = () => buttonSize * 0.9f }
             };
 
@@ -49,12 +50,16 @@ namespace Photos.Core
             {
                 if (!Enabled /*|| photoProvider.DispalyGroups.Count == 0*/)
                     return;
-
-                var groupIdx = photoProvider.DispalyGroups.FindLastIndex(x => x.StartIdx <= photoProvider.Idx);
-
-                ScrollContainer.ScrollOffsetY = (int)GetGroupPosition()[groupIdx].Top + (photoProvider.Idx - photoProvider.DispalyGroups[groupIdx].StartIdx) 
-                    / ImgPerRow * LineHeight + HeaderHeight - (int)Size.Height * 1 / 3;
-
+                if (photoProvider.IsFullScreenDrawMode)
+                {
+                    ScrollContainer.ScrollOffsetY = imgPositions[photoProvider.Idx].Item1.Top - HeaderHeight / 2;
+                }
+                else
+                {
+                    var groupIdx = photoProvider.DispalyGroups.FindLastIndex(x => x.StartIdx <= photoProvider.Idx);
+                    ScrollContainer.ScrollOffsetY = (int)GetGroupPosition()[groupIdx].Top + (photoProvider.Idx - photoProvider.DispalyGroups[groupIdx].StartIdx)
+                        / ImgPerRow * LineHeight + HeaderHeight - (int)Size.Height * 1 / 3;
+                }
             };
 
             new TextLabel()
@@ -66,7 +71,7 @@ namespace Photos.Core
                 DrawBorder = false,
             };
 
-            var groupReplicator = new Replicator()
+            groupReplicator = new Replicator()
             {
                 Link = ScrollContainer.Attach(() => ScrollContainer.OuterRect),
                 GetChildRect = i => GetGroupPosition()[i],
@@ -111,8 +116,12 @@ namespace Photos.Core
                         //!farJump &&
                         true);
                     if (img != null)
-                        return (img, default);
-
+                    {
+                        SKRect r = default;
+                        if (photoProvider.IsFullScreenDrawMode)
+                            r = SKRect.Create(imgPositions[imgIndex].Item1.Size);
+                        return (img, r);
+                    }
 
                     // draw micro
                     var rect = SKRect.Create(Math.Min(ThumbnailDrawSize, lastShownFile.W), Math.Min(ThumbnailDrawSize, lastShownFile.H));
@@ -175,12 +184,14 @@ namespace Photos.Core
         }
 
         public readonly Val<float> RightImageMargin = new(0);
-        int ImgPerRow => imgReplicator.GetItemsPerRow(Size.Width - RightImageMargin);
+        int ImgPerRow => photoProvider.IsFullScreenDrawMode ? 1 : imgReplicator.GetItemsPerRow(Size.Width - RightImageMargin);
 
 
         object lastDisplayGroups;
-        int lastImgPerRow, lastImgSize;
+        int lastImgSize;
+        float lastWidth;
         List<SKRect> groupPositions = new();
+        List<(SKRect, float)> imgPositions = new();
 
         List<SKRect> GetGroupPosition()
         {
@@ -188,21 +199,48 @@ namespace Photos.Core
             var imgPerRow = ImgPerRow;
             var width = Size.Width - RightImageMargin;
 
-            if (!ReferenceEquals(lastDisplayGroups, curDispalyGroups) || lastImgPerRow != imgPerRow || lastImgSize != ThumbnailDrawSize)
+            if (!ReferenceEquals(lastDisplayGroups, curDispalyGroups) || lastWidth != width || lastImgSize != ThumbnailDrawSize)
             {
+                imgReplicator.GetChildRect = photoProvider.IsFullScreenDrawMode 
+                    ? idx => {
+                        var hint = imgPositions[photoProvider.DispalyGroups[groupReplicator.CurrentIndex].StartIdx + idx];
+                        return hint.Item1.OffsetRect(y: -hint.Item2); 
+                    }
+                    : null;
                 groupPositions.Clear();
+                imgPositions.Clear();
                 var bottomOffset = 0f;
+
                 foreach (var item in curDispalyGroups)
                 {
                     SKRect r = default;
                     r.Top = bottomOffset;
-                    bottomOffset += HeaderHeight + (int)Math.Ceiling((double)item.Count / imgPerRow) * LineHeight;
+                    
+                    bottomOffset += HeaderHeight;
+
+                    if (photoProvider.IsFullScreenDrawMode) 
+                    {
+                        var groupStart = bottomOffset;
+                        for (var i = 0; i < item.Count; i++)
+                        {
+                            var f = photoProvider.GetFile(i + item.StartIdx);
+
+                            var imgW = Math.Min(f.W, width);
+                            var imgH = imgW / f.W * f.H;
+                            imgPositions.Add((SKRect.Create((width - imgW) / 2, bottomOffset, imgW, imgH), groupStart));
+                            bottomOffset += (imgH + ThumbnailMargin);
+                        }
+                    }
+                    else
+                        bottomOffset += (int)Math.Ceiling((double)item.Count / imgPerRow) * LineHeight;
+
                     r.Bottom = bottomOffset;
                     r.Right = width;
                     groupPositions.Add(r);
                 }
+
                 lastDisplayGroups = curDispalyGroups;
-                lastImgPerRow = imgPerRow;
+                lastWidth = width;
                 lastImgSize = ThumbnailDrawSize;
             }
 
