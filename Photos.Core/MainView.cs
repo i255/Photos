@@ -65,6 +65,19 @@ namespace Photos.Core
                 ScrollContainer = { Padding = { Func = () => ButtonPanel.Position.Bottom + ButtonPadding - ThumbnailView.Position.Top } }
             };
 
+            photoProvider.RequestUILock = wait =>
+            {
+                var lockAquired = new TaskCompletionSource();
+
+                Task.Factory.StartNew(() => Window.Run(() =>
+                {
+                    lockAquired.SetResult();
+                    wait.Wait();
+                }), TaskCreationOptions.LongRunning);
+
+                return lockAquired.Task;
+            };
+
             photoProvider.PhotoSelected += () => ThumbnailView.Enabled.Const = false;
             _photoView.MenuButton.AdjustRect(x => x.OffsetRect(y: (WindowControlPanel.Enabled ? WindowControlPanel.Position.Bottom + ButtonPadding : 0)));
 
@@ -174,14 +187,14 @@ namespace Photos.Core
 
             var statusToast = new Toast()
             {
-                Text = () => photoProvider.WorkStatus,
+                Text = () => photoProvider.Indexer.WorkStatus,
                 Link = ThumbnailView.Attach(() => ThumbnailView.Position.Select(x => SKRect.Create(0, x.Height - WorkStatusLabelHeight * 1.3f, x.Width, WorkStatusLabelHeight))),
                 Padding = { Const = 1 },
                 TextAlign = { Const = SKTextAlign.Center },
                 //Enabled = { Func = () => photoProvider.WorkStatus != null && ThumbnailView.Enabled}
             };
-            statusToast.Enabled.Adjust(x => x && photoProvider.WorkStatus != null);
-            photoProvider.OnIndexing += indexing => Window?.Run(() => statusToast.Show(indexing ? float.PositiveInfinity : 5f));
+            statusToast.Enabled.Adjust(x => x && photoProvider.Indexer.WorkStatus != null);
+            photoProvider.Indexer.OnIndexing += indexing => Window?.Run(() => statusToast.Show(indexing ? float.PositiveInfinity : 5f));
 
             MainToast = new Toast()
             {
@@ -245,11 +258,10 @@ namespace Photos.Core
 
         public override void Init()
         {
-            photoProvider.FirstIndexTask.ContinueWith(x => Window.Run(() => ShowWelcomeBox())); // wait for init to finish
+            photoProvider.Indexer.FirstIndexTask.ContinueWith(x => Window.Run(() => ShowWelcomeBox())); // wait for init to finish
 
-            photoProvider.ApplyDisplayOrderUpdate = x => Window.Run(() =>
+            photoProvider.OnDisplayOrderUpdate += () => Window.Run(() =>
             {
-                x(); 
                 ThumbnailView.SelectedItems.Clear(); 
                 Window.Invalidate();
             });

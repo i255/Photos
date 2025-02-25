@@ -47,19 +47,52 @@ namespace Photos.Core
 
         Dictionary<int, SyncSource> srcLookup = new();
         object srcLookupSource;
+        object _additionalImageDataLock = new();
 
         public void SetAdditionalImageData(FileRecord file, AdditionalImageData dat)
         {
             if (!file.IsIndexed())
                 throw new ArgumentException();
 
-            if ((dat.Orientation == (int)SKEncodedOrigin.TopLeft || dat.Orientation == 0) && !dat.IsFavorite)
-                AdditionalImageData = AdditionalImageData.Remove(file.Sig);
-            else
+            dat.TimeStamp = FileRecord.TimeTo(DateTime.UtcNow);
+            //if ((dat.Orientation == (int)SKEncodedOrigin.TopLeft || dat.Orientation == 0) && !dat.IsFavorite)
+            //    AdditionalImageData = AdditionalImageData.Remove(file.Sig);
+            //else
+            lock (_additionalImageDataLock)
+            {
                 AdditionalImageData = AdditionalImageData.SetItem(file.Sig, dat);
-            SaveAdditionalData();
+                SaveAdditionalData();
+            }
 
         }
+
+        public IReadOnlyDictionary<ulong, AdditionalImageData> ExportAdditionalImageData() => AdditionalImageData;
+        public bool ImportAdditionalImageData(IReadOnlyDictionary<ulong, AdditionalImageData> data)
+        {
+            bool dirty = false;
+            lock (_additionalImageDataLock)
+            {
+                foreach (var item in data)
+                {
+                    var file = TryGetFileBySignature(item.Key);
+                    if (file == null)
+                        continue;
+
+                    var existing = GetAdditionalImageData(file);
+                    if (existing.TimeStamp > item.Value.TimeStamp || existing != default && existing.TimeStamp == item.Value.TimeStamp)
+                        continue;
+
+                    AdditionalImageData = AdditionalImageData.SetItem(item.Key, item.Value);
+                    dirty = true;
+                }
+
+                if (dirty)
+                    SaveAdditionalData();
+            }
+
+            return dirty;
+        }
+
         public AdditionalImageData GetAdditionalImageData(FileRecord file)
         {
             return AdditionalImageData.TryGetValue(file.Sig, out var data) ? data : default;
@@ -129,7 +162,6 @@ namespace Photos.Core
             var filter = new ArrayFilter<SourceRecord>(x => x != s);
             lock (_files)
                 FilterFileSources(filter, f);
-            IsDirty = true;
             SaveFiles();
         }
 
@@ -345,10 +377,22 @@ namespace Photos.Core
                 return _filesBySource.TryGetValue(identity, out var res) ? res : null;
         }
 
+        public Dictionary<(int, string), ulong> ListFileSources()
+        {
+            lock (_files)
+                return _filesBySource.ToDictionary(x => (x.Key.DirId, x.Key.LowerFileName), x=> x.Value.Sig);
+        }
+
         public int Count => _files.Count;
 
 
         public bool IsDirty;
+        public void SaveFilesIfDirty()
+        {
+            if (IsDirty)
+                SaveFiles();
+        }
+
         public void SaveFiles()
         {
             if (!_initFinished)
@@ -412,6 +456,11 @@ namespace Photos.Core
                 return fs.CanWrite ? new BrotliStream(fs, CompressionLevel.Optimal) : new BrotliStream(fs, CompressionMode.Decompress);
             else
                 return fs;
+        }
+        public SKEncodedOrigin GetOrientation(FileRecord file)
+        {
+            var o = GetAdditionalImageData(file).Orientation;
+            return o == 0 ? SKEncodedOrigin.TopLeft : (SKEncodedOrigin)o;
         }
 
         public T Load<T>(string path)

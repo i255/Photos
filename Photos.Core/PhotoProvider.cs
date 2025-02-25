@@ -10,22 +10,21 @@ using Photos.Lib;
 using System.Reflection;
 using Photos.Core.StoredTypes;
 using System.Threading.Tasks;
+using System.Collections.Concurrent;
 
 namespace Photos.Core
 {
-    public class IndexTaskConfig
+    class UpdateOp
     {
-        public bool QuickScanOnly, ForceMetaRefresh;
-        public Action RunAfterIndex;
-        public string DoneMessage;
+        public Action UILockAction, PreLockAction;
     }
+
     public class PhotoProvider : IDisposable
     {
-        public event Action<bool> OnIndexing;
+        public PhotoIndexer Indexer;
 
         public const int LargeThumbnailSize = 536;
         public const int MediumThumbnailSize = 352;
-        bool _forceRefreshAfterIndex;
 
         public FilterService FilterService { get; private set; }
 
@@ -57,18 +56,15 @@ namespace Photos.Core
             }
         }
 
-        public Task FirstIndexTask => _firstIndexFinished.Task;
-        TaskCompletionSource _firstIndexFinished = new();
+        ConcurrentQueue<UpdateOp> SystemUpdates = new();
         public event Action IndexChanged;
         Task indexTask, initTask, backgroundLoaderTask;
-        DateTime indexTaskStart;
         volatile bool _shutdown;
         public bool ShutdownRequested => _shutdown;
 
         readonly object _lock = new();
         public Storage DB { get; private set; }
         public bool FolderLibraryMode { get; private set; }
-        public readonly bool ProtectUnreadableFolders;
 
         const int MinThumbnailsCacheSize = 5;
         Cache<ulong, SKImage> _scaledThumbnails = new(MinThumbnailsCacheSize) { OnDispose = x => x.Dispose() };
@@ -89,7 +85,7 @@ namespace Photos.Core
                 _fullSizeThumbnails.Clear();
                 _scaledThumbnails.Clear();
                 _microCache.Clear();
-                RefreshDisplayOrder();
+                RefreshDisplayOrderBackgroundOnly(false);
             });
         }
 
@@ -104,20 +100,27 @@ namespace Photos.Core
 
         public PhotoProvider(string dbPath, string editorDir, string fname = null, bool protectUnreadableFolders = true, bool folderLibraryMode = true, Action<PhotoProvider> setupEvents = null)
         {
-            EditorDirectory = Path.Combine(editorDir, Utils.LatinAppName);
+            
             FolderLibraryMode = folderLibraryMode;
-            ProtectUnreadableFolders = protectUnreadableFolders;
+            
             DB = new Storage(dbPath);
             Utils.TraceEnabled = () => DB.Settings.DevMode;
             Utils.ErrorReportOptOut = () => DB.Settings.ErrorOptOut;
 
             DB.OnSettingsUpdate += SettingsUpdate;
+            Indexer = new PhotoIndexer(DB, protectUnreadableFolders, Path.Combine(editorDir, Utils.LatinAppName));
+
             FilterService = new(DB);
-            FilterService.FilterUpdate += () => RefreshDisplayOrder(true);
+            FilterService.FilterUpdate += () => EnqueueRefreshDisplayOrder(true);
+
+            Indexer.IndexUpdateRequest += () => {
+                RefreshFolderViewList();
+                EnqueueRefreshDisplayOrder();
+            };
 
             _errorImage = SKImage.FromBitmap(_errorThumbnail);
 
-            SetFolderMode(fname);
+            SetFolderModeBackgroundOnly(fname);
 
             setupEvents?.Invoke(this);
 
@@ -125,9 +128,10 @@ namespace Photos.Core
             {
                 DB.LoadFiles(_folderViewList);
                 RefreshFolderViewList();
+                RefreshDisplayOrderBackgroundOnly(false);
 
-                RunBackgroundTasks(new IndexTaskConfig());
-                RefreshDisplayOrder();
+                RunIndexerTask(new IndexTaskConfig());
+                backgroundLoaderTask = PriorityScheduler.RunBackgroundThread(BackgroundLoader, ThreadPriority.BelowNormal, "loader");
             });
 
             initTask.DieOnError();
@@ -167,8 +171,26 @@ namespace Photos.Core
                 while (!_shutdown)
                 {
                     var dt = DateTime.UtcNow;
-                    PreloadScaledImages();
+                    UpdateOp task = null;
+                    while (SystemUpdates.TryDequeue(out task))
+                    {
+                        var finished = new TaskCompletionSource();
+                        try
+                        {
+                            task.PreLockAction?.Invoke();
+                            if (task.UILockAction != null)
+                            {
+                                RequestUILock(finished.Task).Wait();
+                                task.UILockAction();
+                            }
+                        }
+                        finally
+                        {
+                            finished.SetResult();
+                        }
+                    }
 
+                    PreloadScaledImages();
                     OnBackgroundWorker?.Invoke();
 
                     if ((DateTime.UtcNow - dt).TotalMilliseconds < 3) // nothing was loaded
@@ -208,13 +230,6 @@ namespace Photos.Core
             }
         }
 
-        public void SaveFilesIfDirty()
-        {
-            lock (_lock)
-                if (DB.IsDirty)
-                    DB.SaveFiles();
-        }
-
         private void RefreshFolderViewList()
         {
             lock (_lock)
@@ -223,16 +238,16 @@ namespace Photos.Core
         }
 
         string _lastFolderViewDir;
-        private void SetFolderMode(string fname, bool isDir = false)
+        private void SetFolderModeBackgroundOnly(string fname, bool isDir = false)
         {
             _folderViewList = null;
 
             if (fname != null)
             {
-                var tmp = new List<FileRecord>();
+                var tmp = new IndexUpdateInfo();
                 _lastFolderViewDir = isDir ? fname : Path.GetDirectoryName(fname);
-                ListDir(tmp, _lastFolderViewDir, false);
-                _folderViewList = tmp.OrderBy(x => x.Src[0].FN).ToList();
+                Indexer.ListDir(null, tmp, _lastFolderViewDir, false);
+                _folderViewList = tmp.FileList.OrderBy(x => x.Src[0].FN).ToList();
                 RefreshFolderViewList();
 
                 if (_folderViewList.Count == 0) // no images in the directory, fallback to gallery
@@ -241,7 +256,7 @@ namespace Photos.Core
 
             FilterService.PersistentFilters = _folderViewList == null;
 
-            RefreshDisplayOrder();
+            RefreshDisplayOrderBackgroundOnly(false);
             if (_folderViewList != null)
             {
                 if (isDir)
@@ -251,39 +266,21 @@ namespace Photos.Core
                     var fn = Path.GetFileName(fname);
                     var idx = _displayOrder.FindIndex(x => x.Src.Any(x => x.FN.Equals(fn, StringComparison.InvariantCultureIgnoreCase)));
                     Idx = idx >= 0 ? idx : 0;
+
+                    PhotoSelected?.Invoke();
                 }
             }
         }
 
-        private void RunBackgroundTasks(IndexTaskConfig cfg)
+        private void RunIndexerTask(IndexTaskConfig cfg)
         {
-            indexTaskStart = DateTime.UtcNow;
-
-            indexTask = PriorityScheduler.RunBackgroundThread(() => IndexDirs(cfg), ThreadPriority.Lowest, "index");
-            backgroundLoaderTask = PriorityScheduler.RunBackgroundThread(BackgroundLoader, ThreadPriority.BelowNormal, "loader");
+            if (indexTask != null && !indexTask.IsCompleted)
+                throw new Exception("already running");
+            indexTask = PriorityScheduler.RunBackgroundThread(() => Indexer.IndexDirs(cfg, _folderViewList), ThreadPriority.Lowest, "index");
         }
 
         //const int WorkStatusDelay = 1000;
-        public Action<Action> ApplyDisplayOrderUpdate = x => x();
-        string _workStatus;
-        public string WorkStatus => /*_workStatus == null || (DateTime.UtcNow - indexTaskStart).TotalMilliseconds < WorkStatusDelay ? null :*/ _workStatus;
-
-        public void ListDir(IList<FileRecord> res, string dir, bool recurse)
-        {
-            try
-            {
-                var files = new DirectoryInfo(dir).EnumerateFiles("*", new EnumerationOptions() { RecurseSubdirectories = recurse });
-                foreach (var x in files)
-                {
-                    if (ImageLoader.KnownEndings.Contains(x.Extension.ToLowerInvariant()))
-                        FileRecord.AddFromInfo(res, x, DB);
-                    if (_shutdown)
-                        return;
-                }
-
-            }
-            catch { }
-        }
+        public event Action OnDisplayOrderUpdate;
 
         public IReadOnlyList<string> GetDirs() => DB.Settings.Dirs;
         public void AddDir(string path)
@@ -294,15 +291,14 @@ namespace Photos.Core
             DB.Settings.Dirs = DB.Settings.Dirs.AddToArr(path);
             DB.SaveSettings();
 
-            _forceRefreshAfterIndex = true;
-            RestartBackgroundTasks(null);
+            RestartBackgroundTasks(null, new IndexTaskConfig() { ForceRefreshDisplayAfterIndex = true });
         }
         public void RemoveDir(string d)
         {
             DB.Settings.Dirs = DB.Settings.Dirs.Where(x => x != d).ToArray();
             DB.SaveSettings();
 
-            RefreshDisplayOrder();
+            EnqueueRefreshDisplayOrder();
             RestartBackgroundTasks(null);
         }
 
@@ -312,7 +308,7 @@ namespace Photos.Core
             {
                 DB.RemoveSource(id);
                 DB.SaveFiles();
-                RefreshDisplayOrder();
+                EnqueueRefreshDisplayOrder();
             });
 
         }
@@ -327,12 +323,10 @@ namespace Photos.Core
                 DB.IsDirty = true;
             }
 
-            SaveFilesIfDirty();
+            DB.SaveFilesIfDirty();
             UpdateLibraryMaybe();
         }
 
-        public event Action<IList<FileRecord>, bool> FileRecordProvider;
-        public Action<FullImageData> FileContentProvider;
         public Func<string, Task<string>> DeleteSourceFileImpl { private get; set; }
 
         public void UpdateLibraryMaybe(IndexTaskConfig cfg = null)//(bool quick, bool forceMetaRefresh = false)
@@ -352,148 +346,18 @@ namespace Photos.Core
             }
         }
 
-        private void IndexDirs(IndexTaskConfig cfg)
+        public void EnqueueRefreshDisplayOrder(bool skipFilters = false)
         {
-            var startTime = DateTime.UtcNow;
-            bool done = false;
-            var onIndexingTask = Utils.WaitWhile(() => OnIndexing == null && !done).ContinueWith(x => OnIndexing?.Invoke(true));
-
-            try
+            var box = new UpdateOp[1];
+            box[0] = new UpdateOp()
             {
+                PreLockAction = () => box[0].UILockAction = RefreshDisplayOrderBackgroundOnly(skipFilters),
+            };
 
-                SetWorkStatus($"updating photo library");
-
-                if (_folderViewList == null) // quick scan first (if available)
-                {
-                    var quickScan = new List<FileRecord>();
-                    foreach (var item in GetBuiltInLibraryFolders())
-                        ListDir(quickScan, item, true); // scan changes in editor dir
-                    FileRecordProvider?.Invoke(quickScan, false);
-                    if (quickScan.Count > 0)
-                        IndexBatch(quickScan, startTime);
-                }
-
-                if (!cfg.QuickScanOnly)
-                {
-                    var newFiles = new List<FileRecord>();
-                    if (_folderViewList != null)
-                        newFiles.AddRange(_folderViewList.Where(x => !x.IsIndexed()));
-                    else
-                    {
-                        var builtInFolders = GetBuiltInLibraryFolders();
-                        foreach (var item in builtInFolders)
-                            ListDir(newFiles, item, true); // prevent deletes from editor dir
-                        foreach (var storeDir in DB.Settings.Dirs)
-                            ListDir(newFiles, storeDir, true);
-
-                        if (!_shutdown)
-                            FileRecordProvider?.Invoke(newFiles, true);
-
-                        if (!_shutdown)
-                            DB.RemoveMissingSources(newFiles, ProtectUnreadableFolders, builtInFolders);
-                    }
-
-                    IndexBatch(newFiles, startTime);
-                }
-
-                cfg.RunAfterIndex?.Invoke();
-
-                SetWorkStatus(cfg.DoneMessage, true);
-            }
-            catch (Exception e) { Utils.LogError(e); }
-            finally
-            {
-                done = true;
-                Task.Run(() =>
-                {
-                    onIndexingTask.Wait();
-                    OnIndexing?.Invoke(false);
-                }).DieOnError();
-            }
-
-            GC.Collect();
-
-            _forceRefreshAfterIndex = false;
+            SystemUpdates.Enqueue(box[0]);
         }
 
-        public void SetWorkStatus(string s, bool done = false) => _workStatus = done ? s : $"...{s}...";
-
-        private void IndexBatch(List<FileRecord> files, DateTime startTime) // TODO: DUPLICATES (inbox)!!!!
-        {
-            _indexCounter = 0;
-            int totalCounter = 0;
-            int totalCount = files.Count;
-            var tsSave = DateTime.UtcNow;
-            var refreshTime = 3_000;
-
-            var sources = files.SelectMany(x => x.Src.Select(x => x.D)).Distinct().Select(x => DB.Directories.GetValue(x).SourceId).Distinct().ToList();
-
-            files.Sort((x, y) => x.DT.CompareTo(y.DT));
-
-            while (files.Count > 0 && !_shutdown)
-            {
-                var idx = files.Count - 1;
-                var item = files[idx];
-                files.RemoveAt(idx);
-                
-                IndexFile(item);
-                if (_shutdown)
-                    break;
-
-                SetWorkStatus($"indexing: {totalCounter}/{totalCount} files");
-
-                if (DB.IsDirty && (DateTime.UtcNow - tsSave).TotalMilliseconds > refreshTime)
-                {
-                    SaveFilesIfDirty();
-                    RefreshFolderViewList();
-                    RefreshDisplayOrder();
-                    tsSave = DateTime.UtcNow;
-                    refreshTime = Math.Min(refreshTime * 2, 60_000);
-                }
-
-                if (_checkPrio)
-                {
-                    _checkPrio = false;
-                    try
-                    {
-                        files.Sort((x, y) => x.PrioTicks.CompareTo(y.PrioTicks));
-                    }
-                    catch (ArgumentException) { } // fails sometimes because prios are changed
-                }
-
-                totalCounter++;
-            }
-
-            while (_indexCounter > 0)
-                Thread.Sleep(1);
-
-            var refresh = _forceRefreshAfterIndex;
-            if (DB.IsDirty)
-            {
-                if (!_shutdown)
-                {
-                    var ts = FileRecord.TimeTo(startTime);
-                    foreach (var item in DB.SyncSources.Where(x => sources.Contains(x.Id)))
-                        item.LastGoodSyncUTC = ts;
-                    if (sources.Contains(0))
-                        DB.FilesSettings.LastGoodLocalSyncUTC = ts;
-                }
-
-                SaveFilesIfDirty();
-                refresh = true;
-            }
-
-            if (!_shutdown && refresh)
-            {
-                RefreshFolderViewList();
-                RefreshDisplayOrder();
-            }
-
-            //SetWorkStatus();
-            _firstIndexFinished.TrySetResult();
-        }
-       
-        public void RefreshDisplayOrder(bool skipFilters = false)
+        Action RefreshDisplayOrderBackgroundOnly(bool skipFilters, bool postponeUIUpdate = false)
         {
             lock (_lock)
             {
@@ -562,14 +426,21 @@ namespace Photos.Core
                     group.Count++;
                 }
 
-                ApplyDisplayOrderUpdate(() =>
+                var postUpdate = () =>
                 {
-
                     _displayOrder = displayOrder;
                     DispalyGroups = dispalyGroups;
                     ClampIdx(ref _idx);
                     DisplayedCount = _displayOrder.Count;
-                });
+
+                    SystemUpdates.Enqueue(new UpdateOp() { PreLockAction = () => OnDisplayOrderUpdate?.Invoke() });
+                };
+
+                if (postponeUIUpdate)
+                    return postUpdate;
+
+                postUpdate();
+                return null;
             }
         }
 
@@ -592,7 +463,7 @@ namespace Photos.Core
 
             if (FolderLibraryMode)
             {
-                var allDirs = GetBuiltInLibraryFolders();
+                var allDirs = Indexer.GetBuiltInLibraryFolders();
                 allDirs.AddRange(GetDirs());
 
                 for (int i = 0; i < dirs.Length; i++) // set IsInLib
@@ -615,131 +486,9 @@ namespace Photos.Core
             return files.ToList();
         }
 
-        volatile int _indexCounter;
-        private void IndexFile(FileRecord file)
-        {
-            if (file.Sig != 0 && DB.TryGetFileBySignature(file.Sig) != null) // check exists by signature
-            {
-                DB.AddFile(file);
-                return;
-            }
 
-            if (file.Src.All(s => DB.TryGetFileBySource(new FileRecordSourceKey(s))?.GetFlag(FileRecordFlags.FlagMetadataRefreshRequired) == false)) // check exists by path
-                return;
 
-            if (file.Src.Any(x => DB.Directories.GetValue(x.D).SourceId == 0)) // local
-            {
-                var fileData = GetFullImage(file);
-                if (fileData == null)
-                    return; // not found
-
-                file.Sig = ComputeSignature(fileData.Data.AsSpan());
-                file.FillExifFields(fileData.Data, DB);
-
-                if (DB.TryGetFileBySignature(file.Sig) != null) // check if already there
-                {
-                    DB.AddFile(file);
-                    return;
-                }
-
-                Interlocked.Increment(ref _indexCounter);
-                PriorityScheduler.RunLowPrioTask(() =>
-                {
-                    try
-                    {
-                        IndexFileCpu(file, fileData);
-                    }
-                    finally
-                    {
-                        Interlocked.Decrement(ref _indexCounter);
-                    }
-                });
-                return;
-            }
-            else
-            {
-                var (micro, thumb) = IndexProvider(file);
-                SaveThumbnails(file, thumb, micro);
-                return;
-            }
-        }
-
-        public static ulong ComputeSignature(ReadOnlySpan<byte> readOnlySpan)
-        {
-            var exif = new ExifReader(readOnlySpan); //skip exif (changed on android without location rights)
-            if (exif.Found && exif.EndOfExif > 0 && exif.EndOfExif < readOnlySpan.Length / 2) // sanity
-                readOnlySpan = readOnlySpan[exif.EndOfExif..];
-
-            using var md5 = MD5.Create();
-            UInt128 res = 0;
-            var dest = MemoryMarshal.Cast<UInt128, byte>(MemoryMarshal.CreateSpan(ref res, 1));
-            md5.TryComputeHash(readOnlySpan, dest, out var bw);
-            if (bw != 16)
-                throw new Exception("hash failed");
-
-            return (ulong)res;
-        }
-
-        public Func<FileRecord, (byte[] micro, byte[] thumb)> IndexProvider;
-
-        void IndexFileCpu(FileRecord file, FullImageData skData)
-        {
-            byte[] buf, microBuf;
-
-            try
-            {
-                ImageLoader.DecodeAndResizeImage(skData, ImageLoader.ScaleToMinSide(DB.Settings.ThumbnailSize, 0));
-
-                if (skData.Bitmap == null)
-                    buf = microBuf = null;
-                else
-                {
-                    file.W = skData.Width;
-                    file.H = skData.Height;
-
-                    using var data = skData.Bitmap.Encode(SKEncodedImageFormat.Jpeg, 85);
-                    buf = data.ToArray();
-
-                    using var tmpImg = SKImage.FromBitmap(skData.Bitmap);
-                    using var micro = ScaleImage(tmpImg, MicroThumbnailSize, new SKSizeI(file.W, file.H));
-                    using var data2 = micro.Encode(SKEncodedImageFormat.Jpeg, 85);
-                    microBuf = data2.ToArray();
-                }
-            }
-            finally
-            {
-                skData.Dispose();
-            }
-
-            SaveThumbnails(file, buf, microBuf);
-        }
-
-        private void SaveThumbnails(FileRecord file, byte[] buf, byte[] microBuf)
-        {
-            if (microBuf == null || buf == null)
-            {
-                file.IndexFailed = true;
-                return;
-            }
-
-            lock (_lock)
-                if (!_shutdown)
-                {
-                    file.T = DB.Thumbnails.CurrentPos;
-                    DB.Thumbnails.Write(buf);
-                    file.TS = buf.Length;
-
-                    file.MT = DB.MicroThumbnails.CurrentPos;
-                    DB.MicroThumbnails.Write(microBuf);
-                    file.MTS = microBuf.Length;
-
-                    DB.AddFile(file);
-                }
-        }
-
-        const int MicroThumbnailSize = 64;
         static SKImage _emptyThumbnail;
-        private volatile bool _checkPrio;
         static SKBitmap ToThumbnail(SKPath p) => IconStore.ToBitmap(128, 128, 32, (p, null));
         public SKImage GetScaledThumbnail(FileRecord rec, bool fast = false)
         {
@@ -748,7 +497,7 @@ namespace Photos.Core
             if (res == null && !rec.IsIndexed() && !rec.IndexFailed) // still indexing
             {
                 rec.PrioTicks = DateTime.UtcNow.Ticks;
-                _checkPrio = true;
+                Indexer.CheckFilesPrio = true;
             }
 
             if (!rec.IsIndexed() || rec.IndexFailed || IsFullScreenDrawMode) // will be fast
@@ -757,7 +506,7 @@ namespace Photos.Core
             if (res == null && !fast && initTask.IsCompleted)
             {
                 var largeImage = GetFullThumbnail(rec);
-                using var bmp = ScaleImage(largeImage, DB.Settings.ThumbnailDrawSize, GetImageDimsAfterOrientation(rec));
+                using var bmp = PhotoIndexer.ScaleImage(largeImage, DB.Settings.ThumbnailDrawSize, GetImageDimsAfterOrientation(rec));
                 res = SKImage.FromBitmap(bmp);
                 _scaledThumbnails.Put(rec.Sig, res);
             }
@@ -768,7 +517,7 @@ namespace Photos.Core
         public bool IsFullScreenDrawMode => DB.Settings.ThumbnailDrawSize < 0;
         public SKSizeI GetImageDimsAfterOrientation(FileRecord rec)
         {
-            var o = GetOrientation(rec);
+            var o = DB.GetOrientation(rec);
             SKSizeI res = new(rec.W, rec.H);
             switch (o)
             {
@@ -785,27 +534,6 @@ namespace Photos.Core
             return res;
         }
 
-        private static SKBitmap ScaleImage(SKImage largeImage, int size, SKSizeI origSize)
-        {
-            if (origSize.Height == 0 || origSize.Width == 0)
-                throw new Exception("bas size");
-
-            var bmp = new SKBitmap(Math.Min(size, origSize.Width), Math.Min(size, origSize.Height), largeImage.ColorType, largeImage.AlphaType);
-            using (var canvas = new SKCanvas(bmp))
-            {
-                var dstRect = bmp.Info.Rect;
-                var imgMinSize = Math.Min(largeImage.Width, largeImage.Height);
-                var srcSize = size > imgMinSize ? new SKSize(imgMinSize, imgMinSize)
-                    : new SKSize(Math.Max(imgMinSize, dstRect.Width), Math.Max(imgMinSize, dstRect.Height));
-                var srcRect = SKRect.Create((largeImage.Width - srcSize.Width) / 2, (largeImage.Height - srcSize.Height) / 2, srcSize.Width, srcSize.Height);
-                using var paint = new SKPaint() { IsAntialias = true };
-                canvas.DrawImage(largeImage, srcRect, dstRect, BaseView.HighQualitySampling, paint);
-                canvas.Flush();
-            }
-
-            return bmp;
-        }
-
         readonly SKBitmap _errorThumbnail = ToThumbnail(IconStore.EmojiDizzy);
         readonly SKImage _errorImage;
         public SKImage GetFullThumbnail(FileRecord file)
@@ -820,7 +548,7 @@ namespace Photos.Core
 
                 if (buf != null && buf.Length != 0)
                     using (var data = SKData.CreateCopy(buf))
-                        res = ImageLoader.DecodeThumbnail(data, GetOrientation(file));
+                        res = ImageLoader.DecodeThumbnail(data, DB.GetOrientation(file));
 
                 res ??= SKImage.FromBitmap(_errorThumbnail);
                 _fullSizeThumbnails.Put(file.Sig, res);
@@ -846,50 +574,12 @@ namespace Photos.Core
             return null;
         }
 
-        public FullImageData GetFullImage(FileRecord rec)
-        {
-            var res = new FullImageData() { File = rec, Orientation = GetOrientation(rec) };
-            foreach (var src in rec.Src)
-            {
-                var dir = DB.Directories.GetValue(src.D);
-                if (dir.SourceId == 0)
-                {
-                    var dt = DateTime.UtcNow;
-                    res.FullPath = dir.CombinePath(src);
-                    res.Directory = dir;
-                    res.LoadedSource = src;
-
-                    res.Data = SKData.Create(res.FullPath);
-                    dt.PrintUtcMs($"skdata {rec.Sig}", 100);
-                    if (res.Data != null)
-                        break;
-                }
-            }
-
-            if (res.Data == null)
-            {
-                var dt = DateTime.UtcNow;
-                FileContentProvider?.Invoke(res);
-                dt.PrintUtcMs($"custom {rec.Sig}", 1500);
-            }
-
-            if (res.Data != null)
-            {
-                var span = res.Data.Span;
-                long t = 0;
-                for (int i = 0; i < span.Length; i += 128)
-                    t += span[i];
-            }
-            else
-                return null;
-
-            return res;
-        }
+        
 
         public (string name, string path, byte[] data) GetImageForSharing(int idx)
         {
             var file = GetFile(idx);
-            using var data = GetFullImage(file);
+            using var data = Indexer.GetFullImage(file);
             var fn = file.Src[0].FN;
             if (data != null && DB.Directories.GetValue(data.LoadedSource.D).IsLocal()) // local source
                 return (fn, data.LoadedSource.GetFullPath(this).osPath, null);
@@ -921,9 +611,11 @@ namespace Photos.Core
 
         public void Dispose()
         {
-            TerminateBackgroundTasks();
+            TerminateIndexerTask();
+            _shutdown = true;
+            backgroundLoaderTask?.Wait();
 
-            SaveFilesIfDirty();
+            DB.SaveFilesIfDirty();
             DB.Dispose();
             _microCache.Clear();
         }        
@@ -941,39 +633,37 @@ namespace Photos.Core
             if (!isFile && !isDir)
                 return;
 
-            RestartBackgroundTasks(() => SetFolderMode(commFile, isDir));
-
-            if (!isDir)
-                PhotoSelected?.Invoke();
+            RestartBackgroundTasks(() => SetFolderModeBackgroundOnly(commFile, isDir));
         }
 
         internal void CloseSingleFolderMode()
         {
-            RestartBackgroundTasks(() => SetFolderMode(null));
+            RestartBackgroundTasks(() => SetFolderModeBackgroundOnly(null));
         }
 
-        object _restartLock = new object();
         private void RestartBackgroundTasks(Action act, IndexTaskConfig cfg = null)
         {
             cfg ??= new IndexTaskConfig();
-            lock (_restartLock)
+            SystemUpdates.Enqueue(new UpdateOp()
             {
-                TerminateBackgroundTasks(); // deadlock if we aquire _lock
-                lock (_lock)
+                PreLockAction = TerminateIndexerTask,
+                UILockAction = () =>
                 {
-                    try { act?.Invoke(); }
-                    finally { RunBackgroundTasks(cfg); }
+                    lock (_lock)
+                    {
+                        try { act?.Invoke(); }
+                        finally { RunIndexerTask(cfg); }
+                    }
                 }
-            }
+            });
         }
 
-        void TerminateBackgroundTasks()
+        void TerminateIndexerTask()
         {
             initTask.Wait();
-            _shutdown = true;
+            Indexer.CancelIndex = true;
             indexTask?.Wait();
-            backgroundLoaderTask?.Wait();
-            _shutdown = false;
+            Indexer.CancelIndex = false;
         }
 
         internal SKImage GetMicroThumbnail(FileRecord file)
@@ -991,7 +681,7 @@ namespace Photos.Core
                 {
                     img = SKImage.FromEncodedData(buf); // SKBitmap.Decode(buf) fails on android net9
 
-                    var o = GetOrientation(file);
+                    var o = DB.GetOrientation(file);
                     if (o != SKEncodedOrigin.TopLeft)
                     {
                         var bmp = SKBitmap.FromImage(img);
@@ -1014,10 +704,19 @@ namespace Photos.Core
             return img;
         }
 
-        public SKEncodedOrigin GetOrientation(FileRecord file)
+        public Func<Task, Task> RequestUILock;
+
+        public void EnqueueInvalidateThumbnailCache()
         {
-            var o = DB.GetAdditionalImageData(file).Orientation;
-            return o == 0 ? SKEncodedOrigin.TopLeft : (SKEncodedOrigin)o;
+            SystemUpdates.Enqueue(new UpdateOp() 
+            {
+                UILockAction = () =>
+                    {
+                        _microCache.Clear();
+                        _scaledThumbnails.Clear();
+                        _fullSizeThumbnails.Clear();
+                    }
+            });
         }
 
         internal void InvalidateThumbnail(FileRecord file)
@@ -1028,15 +727,6 @@ namespace Photos.Core
             _microCache.Remove(file.Sig);
             _scaledThumbnails.Remove(file.Sig);
             _fullSizeThumbnails.Remove(file.Sig);
-        }
-
-        public readonly string EditorDirectory;
-        public event Action<List<string>> RegisterBuiltInDirs;
-        List<string> GetBuiltInLibraryFolders()
-        {
-            var res = new List<string> { EditorDirectory };
-            RegisterBuiltInDirs?.Invoke(res);
-            return res;
         }
 
     }

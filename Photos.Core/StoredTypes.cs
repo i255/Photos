@@ -376,12 +376,14 @@ namespace Photos.Core.StoredTypes
     }
 
     [MessagePackObject]
-    public struct AdditionalImageData
+    public record struct AdditionalImageData
     {
         [Key("or")]
         public int Orientation;
         [Key("if")]
         public bool IsFavorite;
+        [Key("ts")]
+        public long TimeStamp;
     }
 
 }

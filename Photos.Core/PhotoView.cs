@@ -293,7 +293,7 @@ namespace Photos.Core
                 //var fname = file.Src.First().FN;
 
                 //var ext = Path.GetExtension(fname);
-                string picFolder = photoProvider.EditorDirectory;
+                string picFolder = photoProvider.Indexer.EditorDirectory;
 
                 Directory.CreateDirectory(picFolder);
 
@@ -307,7 +307,7 @@ namespace Photos.Core
                     cntr++;
                 } while (File.Exists(newPath));
 
-                using var imgLoadData = photoProvider.GetFullImage(file);
+                using var imgLoadData = photoProvider.Indexer.GetFullImage(file);
                 SKImage img = null;
                 bool dispose = true;
                 if (imgLoadData != null)
@@ -429,8 +429,8 @@ namespace Photos.Core
 
             PhotoViewCacheEntry entry;
             var dt = DateTime.UtcNow;
-            var startOrientation = photoProvider.GetOrientation(fname);
-            using var data = photoProvider.GetFullImage(fname);
+            var startOrientation = photoProvider.DB.GetOrientation(fname);
+            using var data = photoProvider.Indexer.GetFullImage(fname);
             dt.PrintUtcMs($"load {fname.Sig}", 500);
 
             if (data != null)
@@ -461,7 +461,7 @@ namespace Photos.Core
                 entry = new PhotoViewCacheEntry() { ErrorExpireTime = DateTime.UtcNow.AddSeconds(15) }; // retry
             }
 
-            if (startOrientation == photoProvider.GetOrientation(fname)) // could have been changed by user
+            if (startOrientation == photoProvider.DB.GetOrientation(fname)) // could have been changed by user
             {
                 if (loadForZoom)
                 {
@@ -826,7 +826,7 @@ namespace Photos.Core
                                 if (x.Result == null)
                                 {
                                     photoProvider.DB.RemoveSingleSource(file, item);
-                                    photoProvider.RefreshDisplayOrder();
+                                    photoProvider.EnqueueRefreshDisplayOrder();
                                 }
                             }));
                         }, okReturnLevel: Menu.CloseMenuLevel)

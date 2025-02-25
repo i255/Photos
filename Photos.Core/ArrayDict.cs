@@ -48,7 +48,7 @@ namespace Photos.Core
             }
         }
 
-        public int GetIndex(T obj)
+        public int GetIndex(T obj, bool noAdd = false)
         {
             var key = _key(obj);
 
@@ -56,6 +56,8 @@ namespace Photos.Core
             {
                 if (_reverse.TryGetValue(key, out var idx))
                     return idx;
+                else if (noAdd)
+                    return -1;
 
                 idx = highWaterMark;
                 while (idx < _values.Length && _values[idx] != null)
