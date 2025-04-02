@@ -150,15 +150,18 @@ namespace Photos.Core
 
                 try
                 {
-                    if (path == null)
+                    if (path == null && OperatingSystem.IsWindows())
                         items = Directory.GetLogicalDrives();
                     else
                     {
+                        path ??= "/";
                         var trueDir = Directory.GetLogicalDrives().Contains(path) ? null : Directory.ResolveLinkTarget(path, true);
                         items = Directory.GetDirectories(trueDir?.FullName ?? path);
                     }
                 }
                 catch (Exception) { return; }
+
+                Array.Sort(items);
 
                 if (path != null)
                     menu.Items.Add(new MenuItem() { Text = "<SELECT CURRENT FOLDER>", OnClick = () => onResult(path), ReturnLevel = parent });

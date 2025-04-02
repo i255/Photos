@@ -93,7 +93,10 @@ public static class Loader
                         if (text != null)
                             game.OpenFile(text);
                     };
-                    watcher.EnableRaisingEvents = true;
+
+                    try {
+                        watcher.EnableRaisingEvents = true;
+                    } catch(Exception ex) { Core.Utils.LogError(ex); }
 
                     game.Run();
                 }

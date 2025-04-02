@@ -15,7 +15,7 @@
   <ItemGroup>
     <None Remove="Properties\image_16.png" />
     <None Remove="Properties\image_32.png" />
-    <None Remove="Properties\image_96.png" />
+    <Content Include="Properties\image_96.png" CopyToOutputDirectory="Always" TargetPath="Icon.png"/>
   </ItemGroup>
 
   <ItemGroup>

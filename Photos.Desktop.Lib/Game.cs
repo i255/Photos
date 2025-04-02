@@ -75,18 +75,29 @@ namespace Photos.Desktop
 
         static OpenTK.Windowing.Common.Input.WindowIcon GetIcon()
         {
-            var asm = typeof(Game).Assembly;
-            var names = asm.GetManifestResourceNames().Select(x => Regex.Match(x, @"^.*image_(\d+)\.png$")).Where(x => x.Success).ToArray();
-            var images = new OpenTK.Windowing.Common.Input.Image[names.Length];
-            for (int i = 0; i < names.Length; i++)
+            var icons = GetIconStreams();
+            var images = new OpenTK.Windowing.Common.Input.Image[icons.Length];
+            for (int i = 0; i < icons.Length; i++)
             {
-                using var stream = asm.GetManifestResourceStream(names[i].Value);
-                var size = int.Parse(names[i].Groups[1].Value);
-                using var bitmap = SKBitmap.Decode(stream, new SKImageInfo() { Width = size, Height = size, ColorType = SKColorType.Rgba8888, AlphaType = SKAlphaType.Unpremul });
+                var size = icons[i].size;
+                using var bitmap = SKBitmap.Decode(icons[i].buf, new SKImageInfo() { Width = size, Height = size, ColorType = SKColorType.Rgba8888, AlphaType = SKAlphaType.Unpremul });
                 images[i] = new OpenTK.Windowing.Common.Input.Image(size, size, bitmap.GetPixelSpan().ToArray());
             }
 
             return new OpenTK.Windowing.Common.Input.WindowIcon(images);
+        }
+
+        private static (byte[] buf, int size)[] GetIconStreams()
+        {
+            var asm = typeof(Game).Assembly;
+            return asm.GetManifestResourceNames().Select(x => Regex.Match(x, @"^.*image_(\d+)\.png$")).Where(x => x.Success)
+                .Select(x => {
+                    using var stream = asm.GetManifestResourceStream(x.Value);
+                    using var ms = new MemoryStream();
+                    stream.CopyTo(ms);
+                    var buf = ms.ToArray();
+                    return (buf, int.Parse(x.Groups[1].Value));
+                }).ToArray();
         }
 
         protected override void OnLoad()
@@ -197,11 +208,63 @@ namespace Photos.Desktop
                     }
                 };
             }
+            else if (OperatingSystem.IsLinux()) {
+                mainView.OnBuildPlatformSpecifiMenu += (kind, menu) =>
+                {
+                    if (kind == MenuSection.Settings)
+                    {
+                        menu.Items.Add(new()
+                        {
+                            Text = "Create start menu entry",
+                            ReturnLevel = Menu.CloseMenuLevel,
+                            OnClick = () =>
+                            {
+                                CreateLinuxIcon();
+
+                                mainView.MessageBox.Show(["Done!"],
+                                    new MessageBoxButton() { Text = "OK", Action = () => { } });
+                            }
+                        });
+                    }
+                };
+            }
 
             if (transparentBackground)
                 mainView.BackgroundColor = () => photoProvider.DB.Settings.IsOpaqueBackground ? SKColors.Black : SKColors.Black.WithAlpha(0xD0);
 
             _window.Initialize(mainView);
+        }
+
+        private static void CreateLinuxIcon()
+        {
+            var exePath = System.Environment.ProcessPath;
+            var iconPath = Path.Combine(Path.GetDirectoryName(exePath), "Icon.png");
+            var appImage = Environment.GetEnvironmentVariable("APPIMAGE");
+            if (appImage != null)
+            {
+                exePath = appImage;
+                var iconFilePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local/share/icons/uPhotos.png");
+                if (!File.Exists(iconFilePath))
+                {
+                    Directory.CreateDirectory(Path.GetDirectoryName(iconFilePath));
+                    File.WriteAllBytes(iconFilePath, GetIconStreams().OrderByDescending(x => x.size).First().buf);
+                }
+
+                iconPath = Path.GetFileNameWithoutExtension(iconFilePath);
+            }
+
+            File.WriteAllLines(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                ".local/share/applications/uPhotos.desktop"),
+            [
+                "[Desktop Entry]",
+                "Name=" + Core.Utils.AppName,
+                "Exec=" + exePath,
+                "Terminal=false",
+                "Type=Application",
+                "Icon=" + iconPath,
+                "Categories=Graphics;Viewer;Photography;",
+                "MimeType=image/gif;image/heif;image/jpeg;image/png;image/bmp;image/tiff"
+            ]);
         }
 
         private void Game_MouseMove(MouseMoveEventArgs obj)
