@@ -76,7 +76,7 @@ namespace Photos.Core
         {
             try
             {
-                var files = new DirectoryInfo(dir).EnumerateFiles("*", new EnumerationOptions() { RecurseSubdirectories = recurse });
+                var files = new DirectoryInfo(dir).EnumerateFiles("*", new EnumerationOptions() { RecurseSubdirectories = recurse, AttributesToSkip = FileAttributes.None });
                 foreach (var x in files)
                 {
                     if (ImageLoader.KnownEndings.Contains(x.Extension.ToLowerInvariant()))
