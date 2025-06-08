@@ -193,6 +193,7 @@ namespace Photos.Core
                         var imgPoint = _lastInverse.MapPoint(p);
                         var pctPoint = new SKPoint(imgPoint.X / _lastRenderInfo.Width, imgPoint.Y / _lastRenderInfo.Height);
                         _crop = updateCrop(_crop.Value, pctPoint);
+                        UpdateCropToAspectRatio(midPoint);
                     },
                     DragMidPoint = midPoint,
                     ButtonSize = { Func = () => new SKSize(ButtonPanelButtonSize, ButtonPanelButtonSize) },
@@ -347,6 +348,8 @@ namespace Photos.Core
         }
 
         SKRect? _crop;
+        private float? _aspectRatioConstraint;
+
         private void Crop(MenuDef menu)
         {
             var editMenuItems = new List<MenuItem>()
@@ -356,25 +359,104 @@ namespace Photos.Core
                     Icon = IconStore.Check,
                     Text = "Save copy",
                     OnClick = () => CloseEditor(true),
+                    ReturnLevel = menu.Parent
                 },
                 new MenuItem()
                 {
                     Icon = IconStore.X,
                     Text = "Discard",
                     OnClick = () => CloseEditor(false),
+                    ReturnLevel = menu.Parent
                 },
+                new MenuItem(),
+                new MenuItem()
+                {
+                    Text = "Free",
+                    Selected = () => !_aspectRatioConstraint.HasValue,
+                    OnClick = () =>
+                    {
+                        _aspectRatioConstraint = null;
+                    }
+                },
+                new MenuItem()
+                {
+                    Text = "Square (1:1)",
+                    Selected = () => _aspectRatioConstraint.HasValue && Math.Abs(_aspectRatioConstraint.Value - 1f) < 0.01f,
+                    OnClick = () => 
+                    {
+                        _aspectRatioConstraint = 1f;
+                        UpdateCropToAspectRatio();
+                    }
+                },
+                new MenuItem()
+                {
+                    Text = "4:3",
+                    Selected = () => _aspectRatioConstraint.HasValue && Math.Abs(_aspectRatioConstraint.Value - 4f/3f) < 0.01f,
+                    OnClick = () => 
+                    {
+                        _aspectRatioConstraint = 4f/3f;
+                        UpdateCropToAspectRatio();
+                    }
+                }
             };
 
             foreach (var item in editMenuItems)
             {
                 item.TextAlign = SKTextAlign.Right;
-                item.ReturnLevel = menu.Parent;
             }
 
             menu.Items.AddRange(editMenuItems);
             menu.FitToSize = true;
 
-            _crop = SKRect.Create(0.1f, 0.1f, 0.8f, 0.8f);
+            if (_crop == null)
+            {
+                _aspectRatioConstraint = null;
+                _crop = SKRect.Create(0.1f, 0.1f, 0.8f, 0.8f);
+            }
+        }
+
+        private void UpdateCropToAspectRatio(SKPoint? dragHandle = null)
+        {
+            if (!_aspectRatioConstraint.HasValue || !_crop.HasValue)
+                return;
+
+            var currentCrop = _crop.Value;
+            var imgWidth = (float)_lastRenderInfo.Width;
+            var imgHeight = (float)_lastRenderInfo.Height;
+            
+            var currentAspect = currentCrop.Width / currentCrop.Height;
+            // Adjust target aspect ratio based on image dimensions
+            var targetAspect = _aspectRatioConstraint.Value * (imgHeight / imgWidth);
+
+            //Console.WriteLine($"_crop: {_crop.Value}, currentAspect: {currentAspect}, targetAspect: {targetAspect}");
+
+            if (Math.Abs(currentAspect - targetAspect) > 0.01f)
+            {
+                // Determine which handle is being dragged and adjust only that side
+                if (!dragHandle.HasValue || 
+                    dragHandle.Value.X == 1 && dragHandle.Value.Y == 1) // Bottom-right
+                {
+                    currentCrop.Right = Math.Clamp(currentCrop.Left + currentCrop.Height * targetAspect, 0, 1);
+                    currentCrop.Bottom = Math.Clamp(currentCrop.Top + currentCrop.Width / targetAspect, 0, 1);
+                }
+                else if (dragHandle.Value.X == 0 && dragHandle.Value.Y == 0) // Top-left
+                {
+                    currentCrop.Left = Math.Clamp(currentCrop.Right - currentCrop.Height * targetAspect, 0, 1);
+                    currentCrop.Top = Math.Clamp(currentCrop.Bottom - currentCrop.Width / targetAspect, 0, 1);
+                }
+                else if (dragHandle.Value.X == 1 && dragHandle.Value.Y == 0) // Top-right
+                {
+                    currentCrop.Right = Math.Clamp(currentCrop.Left + currentCrop.Height * targetAspect, 0, 1);
+                    currentCrop.Top = Math.Clamp(currentCrop.Bottom - currentCrop.Width / targetAspect, 0, 1);
+                }
+                else if (dragHandle.Value.X == 0 && dragHandle.Value.Y == 1) // Bottom-left
+                {
+                    currentCrop.Left = Math.Clamp(currentCrop.Right - currentCrop.Height * targetAspect, 0, 1);
+                    currentCrop.Bottom = Math.Clamp(currentCrop.Top + currentCrop.Width / targetAspect, 0, 1);
+                }                    
+            }
+
+            _crop = currentCrop;
         }
 
         private void ToggleFavorite()

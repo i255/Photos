@@ -9,6 +9,7 @@ using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Text;
 using System.Threading.Tasks;
+using System.Diagnostics;
 
 namespace Photos.Desktop
 {
@@ -70,7 +71,8 @@ namespace Photos.Desktop
     
     
     
-    public class ClipboardHelper
+    [SupportedOSPlatform("windows")]
+    public class WindowsClipboardHelper
     {
         [DllImport("user32.dll", SetLastError = true)]
         private static extern bool OpenClipboard(IntPtr hWndNewOwner);
@@ -185,6 +187,65 @@ namespace Photos.Desktop
             public int ptY;
             public bool fNC;
             public bool fWide;
+        }
+    }
+
+    [SupportedOSPlatform("linux")]
+    public class LinuxClipboardHelper
+    {
+        public static string CopyFilesToClipboard(string[] filePaths)
+        {
+            if (filePaths == null || filePaths.Length == 0)
+                return "No files selected for copying.";
+
+            // Convert file paths to URI format
+            var uriList = string.Join("\n", filePaths.Select(path => "file://" + path));
+
+            // Check if we're running under Wayland
+            var waylandDisplay = Environment.GetEnvironmentVariable("WAYLAND_DISPLAY");
+            var startInfo = new ProcessStartInfo
+            {
+                UseShellExecute = false,
+                RedirectStandardInput = true,
+                CreateNoWindow = true
+            };
+
+            string clipboardTool;
+            string installCommand;
+            if (!string.IsNullOrEmpty(waylandDisplay))
+            {
+                // Use wl-copy for Wayland
+                clipboardTool = "wl-copy";
+                startInfo.FileName = clipboardTool;
+                startInfo.Arguments = "--type text/uri-list";
+                installCommand = "sudo apt-get install wl-clipboard";
+            }
+            else
+            {
+                // Use xclip for X11
+                clipboardTool = "xclip";
+                startInfo.FileName = clipboardTool;
+                startInfo.Arguments = "-selection clipboard -t text/uri-list";
+                installCommand = "sudo apt-get install xclip";
+            }
+
+            try
+            {
+                using var process = Process.Start(startInfo);
+                using var writer = process.StandardInput;
+                writer.Write(uriList);
+                writer.Close();
+
+                process.WaitForExit();
+                if (process.ExitCode != 0)
+                    throw new Exception();
+
+                return null; // Success
+            }
+            catch
+            {
+                return $"Please install {clipboardTool} (like: '{installCommand}')";
+            }
         }
     }
 }

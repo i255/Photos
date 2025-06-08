@@ -161,21 +161,29 @@ namespace Photos.Desktop
             }
 
             var mainView = new MainView(photoProvider);
+
+            new Button() // copy to clipboard
+            {
+                LinkFirst = mainView.ButtonPanel.Attach(),
+                Icon = { Const = IconStore.Copy },
+                OnClick = () =>
+                {
+                    var files = photoProvider.GetFiles(mainView.ThumbnailView.SelectedItems)
+                        .Select(x => photoProvider.GetLocalPath(x)).Where(x => x != null).ToArray();
+
+                    string error = null;
+                    if (OperatingSystem.IsWindows())    
+                        WindowsClipboardHelper.CopyFilesToClipboard(files);
+                    else if (OperatingSystem.IsLinux())
+                        error = LinuxClipboardHelper.CopyFilesToClipboard(files);
+
+                    mainView.MainToast.Show(error ??"Files copied to clipboard");
+                },
+                Enabled = { Func = () => mainView.ThumbnailView.SelectionActive }
+            };
+
             if (OperatingSystem.IsWindows())
             {
-                new Button() // copy to clipboard
-                {
-                    LinkFirst = mainView.ButtonPanel.Attach(),
-                    Icon = { Const = IconStore.Copy },
-                    OnClick = () =>
-                    {
-                        ClipboardHelper.CopyFilesToClipboard(photoProvider.GetFiles(mainView.ThumbnailView.SelectedItems)
-                            .Select(x => photoProvider.GetLocalPath(x)).Where(x => x != null).ToArray());
-                        mainView.MainToast.Show("Files copied to clipboard");
-                    },
-                    Enabled = { Func = () => mainView.ThumbnailView.SelectionActive }
-                };
-
                 mainView.OnBuildPlatformSpecifiMenu += (kind, menu) =>
                 {
                     if (kind == MenuSection.Settings)
