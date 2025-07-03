@@ -76,6 +76,17 @@ namespace Photos.Core
                     photoProvider.DB.Settings = photoProvider.DB.Settings with { ErrorOptOut = !photoProvider.DB.Settings.ErrorOptOut };
                 }
             });
+
+            menu.Items.Add(new()
+            {
+                Text = $"Update notifications: {(photoProvider.DB.Settings.UpdatesNotificationOptOut ? "disabled" : "enabled")}",
+                OnClick = () =>
+                {
+                    photoProvider.DB.Settings = photoProvider.DB.Settings with
+                        { UpdatesNotificationOptOut = !photoProvider.DB.Settings.UpdatesNotificationOptOut };
+                }
+            });
+
         }
 
         int _devMenuCntr;

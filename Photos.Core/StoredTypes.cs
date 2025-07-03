@@ -347,6 +347,8 @@ namespace Photos.Core.StoredTypes
         public bool ErrorOptOut;
         [Key("obg")]
         public bool IsOpaqueBackground;
+        [Key("notif")]
+        public bool UpdatesNotificationOptOut;
 
         [IgnoreMember]
         Type EqualityContract => null;

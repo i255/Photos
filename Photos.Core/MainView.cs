@@ -320,8 +320,8 @@ namespace Photos.Core
                 var srvVer = await httpClient.GetStringAsync($"https://www.bytificial.com/version.txt?app_ver={thisVer}&db_ver={photoProvider.DB.Settings.CreationTimeUtc / 1000000}");
                 long toInt(string s) => s.Split(".").Select(long.Parse).Aggregate((x, y) => x * 1000 + y);
 
-                if (toInt(srvVer) > toInt(thisVer))
-                    MainToast.Show($"A newer version of {Utils.AppName} is available", 8);
+                if (toInt(srvVer) > toInt(thisVer) && !photoProvider.DB.Settings.UpdatesNotificationOptOut)
+                    Window.Run(() => MainToast.Show($"A newer version of {Utils.AppName} is available", 5));
             }
             catch (Exception)
             {
