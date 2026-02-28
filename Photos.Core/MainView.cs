@@ -13,7 +13,7 @@ namespace Photos.Core
     public partial class MainView : FreePanel
     {
         public static string Version = typeof(MainView).Assembly.GetName().Version.ToString();
-        public static string Copyright = "Copyright (c) 2022-2025 Vadim Lapiner";
+        public static string Copyright = "Copyright (c) 2022-2026 Vadim Lapiner";
 
         PhotoView _photoView;
         public readonly ThumbnailView ThumbnailView;

@@ -1,6 +1,6 @@
 The MIT License (MIT)
 
-Copyright (c) Vadim Lapiner 2022-2025
+Copyright (c) Vadim Lapiner 2022-2026
 
 All rights reserved.
 
